@@ -1,389 +1,402 @@
 import streamlit as st
-import plotly.graph_objects as go
+import uuid
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from io import BytesIO
 from datetime import datetime
+from tunnel_master_logic import TunnelType, TunnelSafetySystem, TunnelSection, TunnelSpan, DataManager, ProjectMetadata, InspectionData
 
-# 로직 엔진 불러오기
-from tunnel_master_logic import TunnelType, TunnelSafetySystem, RawInspectionData, AuxiliaryInput, MaterialDefects, SurroundingsInput
+# ---------------------------------------------------------
+# 설정 및 스타일
+# ---------------------------------------------------------
+st.set_page_config(page_title="SM-PED Tunnel Pro", layout="wide")
 
-# =========================================================
-# 1. 페이지 설정
-# =========================================================
-st.set_page_config(
-    page_title="SM-PED Tunnel System",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+if 'projects' not in st.session_state:
+    st.session_state['projects'] = DataManager.load_all_projects()
+if 'active_project_id' not in st.session_state:
+    st.session_state['active_project_id'] = None
 
-# =========================================================
-# 2. 전문적 디자인을 위한 CSS (다크모드 대응 적용)
-# =========================================================
 st.markdown("""
     <style>
-    /* 전체 폰트 설정 */
     .main { font-family: 'Pretendard', sans-serif; }
     
-    /* 상단 헤더 바 (다크 네이비 - 고정색) */
-    .header-bar {
-        padding: 20px 30px;
+    /* 헤더바 스타일 */
+    .header-bar { 
+        padding: 15px 30px; 
         background-color: #002b5c; 
-        border-bottom: 3px solid #b38f00; /* Gold Accent */
-        color: white;
-        margin-bottom: 20px;
-        display: flex; justify-content: space-between; align-items: center;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        border-bottom: 3px solid #b38f00; 
+        color: white; 
+        display: flex; justify-content: space-between; align-items: center; 
     }
-    .brand-title { font-size: 26px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; }
-    .brand-sub { font-size: 14px; color: #ced4da; font-weight: 400; margin-left: 15px; border-left: 1px solid #6c757d; padding-left: 15px;}
-    .user-info { text-align: right; font-size: 12px; line-height: 1.4; color: #e9ecef; }
     
-    /* 섹션 헤더 스타일 */
-    .section-header {
-        font-size: 18px; font-weight: 700; color: var(--text-color); /* 테마에 따라 글자색 변경 */
-        border-left: 5px solid #002b5c; padding-left: 10px; margin: 20px 0 10px 0;
-    }
-
-    /* KPI 카드 (배경색을 테마에 맞춤) */
-    .kpi-box {
-        background-color: var(--secondary-background-color); /* 다크모드 대응 */
-        border: 1px solid var(--secondary-background-color);
-        border-radius: 4px;
-        padding: 20px;
-        text-align: center;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    .kpi-label { font-size: 13px; color: var(--text-color); opacity: 0.7; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-    .kpi-value { font-size: 32px; font-weight: 800; color: var(--text-color); margin-top: 5px; }
-    .kpi-sub { font-size: 12px; color: var(--text-color); opacity: 0.5; margin-top: 5px; }
-
-    /* 경고 박스 */
-    .critical-alert {
-        background-color: #4a1b1b; /* 다크모드에서도 잘 보이는 짙은 빨강 배경 */
-        border: 1px solid #c92a2a;
-        color: #ffc9c9; /* 밝은 빨강 글씨 */
-        padding: 15px;
-        border-radius: 4px; font-weight: 600; margin-top: 15px;
-    }
-    .normal-alert {
-        padding:15px; 
+    /* 프로젝트 카드 */
+    .project-card { 
+        border: 1px solid #dee2e6; 
+        padding: 20px; 
+        border-radius: 8px; 
+        margin-bottom: 15px; 
         background-color: var(--secondary-background-color); 
-        border:1px solid var(--secondary-background-color); 
-        color: var(--text-color); opacity: 0.8;
-        border-radius:4px; margin-top:15px; text-align:center;
+        transition: 0.3s; 
+    }
+    .project-card:hover { border-color: #002b5c; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    
+    /* 입력 그룹 헤더 */
+    .step-header { 
+        font-size: 15px; font-weight: bold; color: #002b5c; margin-top: 10px; margin-bottom: 5px; 
+        border-left: 4px solid #b38f00; padding-left: 8px; 
+    }
+    
+    /* 저장 컨트롤 패널 */
+    .save-control { 
+        background-color: #f1f3f5; border: 1px solid #ced4da; border-radius: 8px; 
+        padding: 10px; margin-bottom: 20px; text-align: center; color: black;
     }
 
-    /* ★ 핵심 수정: 보고서 스타일 (다크모드 대응) ★ */
-    .report-paper {
-        background-color: var(--secondary-background-color); /* 배경색 자동 변경 */
-        color: var(--text-color); /* 글자색 자동 변경 */
+    /* ★★★ [핵심] 보고서 스타일 강제 적용 (다크모드 무시) ★★★ */
+    .report-container {
+        background-color: #ffffff !important; /* 배경 무조건 흰색 */
         padding: 40px;
-        border: 1px solid rgba(128, 128, 128, 0.2); /* 테두리 투명도 조절 */
-        box-shadow: 0 0 10px rgba(0,0,0,0.1);
-        max-width: 900px;
-        margin: auto;
+        border-radius: 4px;
+        border: 1px solid #ddd;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        color: #000000 !important; /* 기본 글씨 검정 */
+        margin-bottom: 30px;
     }
-    .report-title { 
-        text-align: center; font-size: 24px; font-weight: bold; margin-bottom: 30px; 
-        text-decoration: underline; text-underline-offset: 8px; color: var(--text-color);
+    
+    /* 보고서 내부 모든 텍스트 강제 검정색 */
+    .report-container h1, .report-container h2, .report-container h3, 
+    .report-container h4, .report-container h5, .report-container p, 
+    .report-container span, .report-container div, .report-container li {
+        color: #000000 !important;
     }
-    .report-table { width: 100%; border-collapse: collapse; margin-top: 20px; color: var(--text-color); }
+
+    /* 보고서 테이블 스타일 */
+    .report-table { 
+        width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; 
+        color: #000000 !important; 
+        background-color: #ffffff !important;
+    }
     .report-table th { 
-        background-color: rgba(128, 128, 128, 0.1); /* 헤더 배경 투명도 조절 */
-        border: 1px solid rgba(128, 128, 128, 0.3); 
-        padding: 10px; text-align: center; font-size: 13px; font-weight: bold;
+        background-color: #f1f3f5 !important; /* 헤더 회색 배경 */
+        border: 1px solid #888 !important; 
+        padding: 10px; text-align: center; font-weight: bold; 
+        color: #000000 !important; 
     }
     .report-table td { 
-        border: 1px solid rgba(128, 128, 128, 0.3); 
-        padding: 10px; text-align: center; font-size: 13px; 
+        border: 1px solid #888 !important; 
+        padding: 8px; text-align: center; 
+        color: #000000 !important; 
+        background-color: #ffffff !important;
+    }
+
+    /* 의견 박스 */
+    .opinion-box { 
+        border: 1px solid #888 !important; 
+        padding: 15px; min-height: 100px; font-size: 14px; 
+        color: #000000 !important; 
+        background-color: #ffffff !important;
+        white-space: pre-wrap; /* 줄바꿈 보존 */
     }
     
-    /* 테이블 강조색 및 최종 등급 색상 */
-    .table-highlight-row { background-color: rgba(128, 128, 128, 0.05); }
-    .final-score { font-weight:bold; color: #4a90e2; font-size:16px; } /* 다크모드에서도 잘 보이는 파랑 */
-    .final-grade { font-weight:bold; color: #e57373; font-size:18px; } /* 다크모드에서도 잘 보이는 빨강 */
-    
-    /* 종합 의견 박스 */
-    .opinion-box {
-        border: 1px solid rgba(128, 128, 128, 0.3); 
-        padding: 15px; font-size: 13px; min-height: 80px;
-        background-color: rgba(128, 128, 128, 0.05);
-        color: var(--text-color);
+    /* 종합 등급 박스 */
+    .grade-box {
+        padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;
+        background-color: #fff !important;
     }
     </style>
-    """, unsafe_allow_html=True)
-
-# =========================================================
-# 3. 사이드바: 프로젝트 및 점검자 설정
-# =========================================================
-with st.sidebar:
-    st.markdown("### [프로젝트 및 점검자 설정]")
-    
-    with st.container():
-        proj_name = st.text_input("시설물명", "성남1터널 (상행선)")
-        field_inspector = st.text_input("점검 책임자 (성명)", "홍길동")
-        inspector_pos = st.text_input("직위 / 직급", "특급기술자")
-        insp_company = st.text_input("소속 회사", "(주)다음기술단")
-        insp_date = st.date_input("점검 수행일", datetime.now())
-    
-    st.markdown("---")
-    st.markdown("### [구조물 제원 설정]")
-    
-    type_options = {
-        "재래식 (무근 콘크리트)": TunnelType.ASSM_PLAIN,
-        "재래식 (조적)": TunnelType.ASSM_BRICK,
-        "NATM (철근 콘크리트)": TunnelType.NATM_RC,
-        "개착식 (박스 구조물)": TunnelType.OPEN_CUT
-    }
-    selected_type_key = st.selectbox("터널 형식 선택", list(type_options.keys()))
-    current_type = type_options[selected_type_key]
-    
-    st.info(f"적용 기준: 안전점검 세부지침(터널편)\n- 라이닝 분모: {current_type.lining_denom}\n- 종합 분모: {current_type.total_denom}")
-    
-    st.markdown("---")
-    st.caption("SM-PED Version 2026-1.0")
-
-# =========================================================
-# 4. 상단 헤더 (Corporate Identity)
-# =========================================================
-st.markdown(f"""
-    <div class="header-bar">
-        <div style="display:flex; align-items:center;">
-            <span class="brand-title">SM-PED Tunnel</span>
-            <span class="brand-sub">Intelligent Safety Assessment System</span>
-        </div>
-        <div class="user-info">
-            <b>(주)다음기술단 기술연구소</b><br>
-            System Architect: 이승현 차장
-        </div>
-    </div>
 """, unsafe_allow_html=True)
 
-# =========================================================
-# 5. 메인 워크스페이스
-# =========================================================
-tab1, tab2 = st.tabs(["데이터 입력 및 분석", "종합 안전등급 보고서"])
-
-# 로직 엔진 초기화
-system = TunnelSafetySystem(current_type)
+st.markdown(f"""
+    <div class="header-bar">
+        <div><span style="font-size:22px; font-weight:800; letter-spacing:0.5px;">SM-PED Tunnel</span> <span style="font-size:13px; opacity:0.8; margin-left:10px;"></span></div>
+        <div style="text-align:right; font-size:12px;">(주)다음기술단 기술연구소<br>Arch: 이승현 차장</div>
+    </div><br>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# [Tab 1] 데이터 입력 및 분석
+# 함수: 히트맵 (보고서용 - 흰 배경/검은 글씨 강제)
 # ---------------------------------------------------------
-with tab1:
-    col_input, col_result = st.columns([1.1, 0.9], gap="large")
+def draw_report_heatmap(sections):
+    data = []
+    current_dist = 0
+    color_map = {'A': '#2ecc71', 'B': '#3498db', 'C': '#f1c40f', 'D': '#e67e22', 'E': '#e74c3c'}
     
-    # --- 좌측: 데이터 입력 패널 ---
-    with col_input:
-        st.markdown('<div class="section-header">1. 손상 현황 데이터 입력</div>', unsafe_allow_html=True)
-        
-        # 1. 라이닝 평가 (아코디언 기본 확장)
-        with st.expander("라이닝(Lining) 주요 결함", expanded=True):
-            c1, c2 = st.columns(2)
-            with c1:
-                crack_width = st.number_input("최대 균열폭 (mm)", 0.0, 10.0, 0.25, 0.05, format="%.2f")
-            with c2:
-                breakage_grade = st.select_slider("파손 및 손상 등급", ["a", "b", "c", "d", "e"], value="a")
-            
-            c3, c4 = st.columns(2)
-            with c3:
-                leakage_grade = st.selectbox("누수 상태 등급", ["a", "b", "c", "d", "e"])
-                soil_leak = st.checkbox("토립자 유출 동반 (중대결함)", value=False)
-            with c4:
-                st.markdown("**재질열화 세부평가** (가장 불리한 등급 자동적용)")
-                sub_c1, sub_c2 = st.columns(2)
-                with sub_c1:
-                    mat_spall = st.selectbox("박리/박락", ["a", "b", "c", "d", "e"], index=0)
-                    mat_efflo = st.selectbox("백태", ["a", "b", "c", "d", "e"], index=0)
-                with sub_c2:
-                    mat_rebar = st.selectbox("철근노출", ["a", "b", "c", "d", "e"], index=0)
-                    mat_carb = st.selectbox("탄산화/염화물", ["a", "b", "c", "d", "e"], index=0)
+    for sec in sections:
+        for span in sec.spans:
+            grade = span.result_cache.get('grade', 'A')[0]
+            data.append(dict(Task=f"Span {span.span_no}", Start=current_dist, Finish=current_dist + span.length, Grade=grade, Color=color_map.get(grade, '#ccc')))
+            current_dist += span.length
 
-        # 2. 주변 및 부대시설 (아코디언 기본 확장)
-        with st.expander("주변환경 및 부대시설 평가", expanded=True):
-            surroundings_score = st.slider("주변상태 결함점수 합계 (배수/지반/갱문)", 0, 10, 2)
-            
-            st.markdown("**부대시설 가중치 산정**")
-            ac1, ac2 = st.columns([2, 1])
-            with ac1:
-                aux_name = st.text_input("부대시설명", "피난연락갱", label_visibility="collapsed")
-            with ac2:
-                aux_score = st.number_input("결함지수(f)", 0.0, 1.0, 0.1, 0.05, label_visibility="collapsed")
-
-    # --- 우측: 실시간 분석 결과 ---
-    with col_result:
-        st.markdown('<div class="section-header">2. 실시간 안전성 분석 결과</div>', unsafe_allow_html=True)
-        
-        # 1. 객체 생성
-        mat_defects = MaterialDefects(mat_spall, mat_efflo, mat_rebar, mat_carb)
-        
-        # 2. 계산 실행
-        span_res = system.calculate_span(
-            RawInspectionData(1, crack_width, leakage_grade, breakage_grade, mat_defects)
-        )
-        if soil_leak and leakage_grade >= 'd':
-            span_res['alerts'].append("누수 등급 d 이상 + 토립자 유출 확인")
-
-        aux_list = [AuxiliaryInput(aux_name, aux_score)]
-        F_basic = (span_res['total_score'] + surroundings_score) / current_type.total_denom
-        w = system.calculate_auxiliary_weight(aux_list)
-        F_total = F_basic * w
-        final_grade_str = system.calculate_final_grade(F_total)
-        short_grade = final_grade_str[0]
-
-        # 3. KPI 박스 (다크모드 대응)
-        kc1, kc2, kc3 = st.columns(3)
-        kc1.markdown(f"""<div class="kpi-box"><div class="kpi-label">라이닝 지수(f)</div><div class="kpi-value">{span_res['f_value']:.4f}</div><div class="kpi-sub">점수합: {span_res['total_score']}</div></div>""", unsafe_allow_html=True)
-        kc2.markdown(f"""<div class="kpi-box"><div class="kpi-label">가중치(w)</div><div class="kpi-value">{w:.2f}</div><div class="kpi-sub">대상: {aux_name}</div></div>""", unsafe_allow_html=True)
-        kc3.markdown(f"""<div class="kpi-box" style="border-top: 3px solid #4a90e2;"><div class="kpi-label">종합 결함지수(F)</div><div class="kpi-value" style="color:#4a90e2;">{F_total:.4f}</div><div class="kpi-sub">등급: {short_grade}</div></div>""", unsafe_allow_html=True)
-
-        st.write("") # 간격
-
-        # 4. 게이지 차트 (다크모드 대응 색상)
-        gauge_bar_color = "#4a90e2" # 밝은 파랑 (다크모드에서 잘 보임)
-        gauge_axis_color = "#adb5bd" # 회색
-        
-        fig = go.Figure(go.Indicator(
-            mode = "gauge+number",
-            value = F_total,
-            title = {'text': f"종합 안전등급: {short_grade}", 'font': {'size': 18, 'color': gauge_axis_color, 'family': "Arial"}},
-            gauge = {
-                'axis': {'range': [0, 1.0], 'tickwidth': 1, 'tickcolor': gauge_axis_color},
-                'bar': {'color': gauge_bar_color},
-                'steps': [
-                    {'range': [0, 0.15], 'color': "rgba(46, 204, 113, 0.3)"}, # A (Green transparent)
-                    {'range': [0.15, 0.30], 'color': "rgba(52, 152, 219, 0.3)"}, # B (Blue transparent)
-                    {'range': [0.30, 0.55], 'color': "rgba(241, 196, 15, 0.3)"}, # C (Yellow transparent)
-                    {'range': [0.55, 0.75], 'color': "rgba(230, 126, 34, 0.3)"}, # D (Orange transparent)
-                    {'range': [0.75, 1.0], 'color': "rgba(231, 76, 60, 0.3)"}   # E (Red transparent)
-                ],
-                'threshold': {'line': {'color': "#e57373", 'width': 4}, 'thickness': 0.75, 'value': F_total}
-            }
+    if not data: return None
+    df = pd.DataFrame(data)
+    fig = go.Figure()
+    for _, row in df.iterrows():
+        fig.add_trace(go.Bar(
+            x=[row['Finish'] - row['Start']], y=["Status"], base=[row['Start']], orientation='h',
+            marker=dict(color=row['Color'], line=dict(color='black', width=1)), showlegend=False
         ))
-        fig.update_layout(height=250, margin=dict(l=30, r=30, t=30, b=30), paper_bgcolor="rgba(0,0,0,0)", font={'color': gauge_axis_color})
-        st.plotly_chart(fig, use_container_width=True)
+    
+    # ★ 다크모드 무시 설정: 배경 흰색, 글씨 검정색 ★
+    fig.update_layout(
+        height=120, margin=dict(l=10, r=10, t=30, b=10),
+        xaxis=dict(showticklabels=True, title="Distance (m)", color="black", gridcolor="#eee"), 
+        yaxis=dict(showticklabels=False, color="black"), 
+        title=dict(text="터널 상태 분포도 (Tunnel Status Map)", font=dict(size=14, color="black")),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        font=dict(color="black")
+    )
+    return fig
 
-        # 5. 경고 메시지 (다크모드 대응)
-        if span_res['alerts']:
-            alert_text = "<br>".join([f"• {msg}" for msg in span_res['alerts']])
-            st.markdown(f"""<div class="critical-alert">[CRITICAL WARNING] 중대한 결함 감지<br><span style="font-weight:400; font-size:14px;">{alert_text}</span></div>""", unsafe_allow_html=True)
+# ---------------------------------------------------------
+# 함수: 히트맵 (화면용 - 입력 탭용)
+# ---------------------------------------------------------
+def draw_screen_heatmap(sections):
+    data = []
+    current_dist = 0
+    color_map = {'A': '#2ecc71', 'B': '#3498db', 'C': '#f1c40f', 'D': '#e67e22', 'E': '#e74c3c'}
+    
+    for sec in sections:
+        for span in sec.spans:
+            grade = span.result_cache.get('grade', 'A')[0]
+            f_val = span.result_cache.get('f_value', 0.0)
+            data.append(dict(Task=f"Span {span.span_no}", Start=current_dist, Finish=current_dist + span.length, Grade=grade, F_Value=f_val, Section=f"Sec {sec.id} ({sec.type.label})", Color=color_map.get(grade, '#ccc')))
+            current_dist += span.length
+
+    if not data: return None
+    df = pd.DataFrame(data)
+    fig = go.Figure()
+    for _, row in df.iterrows():
+        fig.add_trace(go.Bar(
+            x=[row['Finish'] - row['Start']], y=["Status"], base=[row['Start']], orientation='h',
+            marker=dict(color=row['Color'], line=dict(color='white', width=1)),
+            hovertemplate=f"<b>{row['Section']}</b><br>Span No.{row['Task'].split()[-1]}<br>등급: {row['Grade']}<br>F: {row['F_Value']:.4f}<extra></extra>",
+            showlegend=False
+        ))
+    fig.update_layout(height=120, margin=dict(l=10, r=10, t=30, b=10), xaxis=dict(title="터널 거리 (m)", showgrid=True), yaxis=dict(showticklabels=False), title=dict(text="[터널 전체 구간별 안전등급 현황도]", font=dict(size=14, color="#002b5c")), plot_bgcolor='rgba(0,0,0,0)')
+    return fig
+
+# ---------------------------------------------------------
+# [MODE 1] 프로젝트 선택
+# ---------------------------------------------------------
+if st.session_state['active_project_id'] is None:
+    st.title("프로젝트 관리 Dashboard")
+    st.info("본 시스템은 수동 저장(Manual Save) 방식입니다. 작업 후 반드시 [저장] 버튼을 눌러주세요.")
+
+    col1, col2 = st.columns([2, 1], gap="large")
+    with col2:
+        st.markdown("### 신규 프로젝트")
+        with st.form("create_proj"):
+            name = st.text_input("시설물명", placeholder="예: 판교1터널")
+            inspector = st.text_input("점검자", "홍길동")
+            if st.form_submit_button("생성", type="primary", use_container_width=True):
+                if name:
+                    pid = str(uuid.uuid4())[:8]
+                    st.session_state['projects'][pid] = ProjectMetadata(pid, name, inspector, "특급", "(주)다음기술단", datetime.now().strftime("%Y-%m-%d"))
+                    DataManager.save_all_projects(st.session_state['projects'])
+                    st.rerun()
+
+    with col1:
+        st.markdown("### 내 프로젝트 목록")
+        if not st.session_state['projects']: st.warning("등록된 프로젝트가 없습니다.")
         else:
-            st.markdown("""<div class="normal-alert">[NORMAL] 특이사항 없음 / 중대한 결함 징후 미발견</div>""", unsafe_allow_html=True)
+            for pid, p in st.session_state['projects'].items():
+                with st.container():
+                    st.markdown(f"""<div class="project-card"><div style="display:flex; justify-content:space-between;"><div><h4 style="margin:0; color:#002b5c;">{p.name}</h4><small style="color:gray;">{p.date_str} | {p.inspector}</small></div><div style="text-align:right;"><span style="font-size:12px; background:#e9ecef; padding:4px 8px; border-radius:4px; font-weight:bold;">구간: {len(p.sections)}개</span></div></div></div>""", unsafe_allow_html=True)
+                    c1, c2, c3 = st.columns([2, 1, 1])
+                    if c1.button(f"작업 열기", key=f"op_{pid}", type="primary", use_container_width=True):
+                        st.session_state['active_project_id'] = pid
+                        st.rerun()
+                    if c3.button("삭제", key=f"del_{pid}", use_container_width=True):
+                        del st.session_state['projects'][pid]
+                        DataManager.save_all_projects(st.session_state['projects'])
+                        st.rerun()
 
 # ---------------------------------------------------------
-# [Tab 2] 종합 안전등급 보고서 (Report)
+# [MODE 2] 작업 공간
 # ---------------------------------------------------------
-with tab2:
-    # A4 용지 느낌의 컨테이너 (다크모드 대응)
-    st.markdown('<div class="report-paper">', unsafe_allow_html=True)
+else:
+    pid = st.session_state['active_project_id']
+    proj = st.session_state['projects'][pid]
+    system = TunnelSafetySystem()
     
-    # 1. 보고서 제목
-    st.markdown(f'<div class="report-title">정밀안전진단 종합평가 보고서</div>', unsafe_allow_html=True)
-    
-    # 2. 개요 표
-    st.markdown(f"""
-    <table class="report-table">
-        <tr>
-            <th width="20%">시설물명</th>
-            <td width="30%">{proj_name}</td>
-            <th width="20%">점검 기준일</th>
-            <td width="30%">{insp_date.strftime('%Y년 %m월 %d일')}</td>
-        </tr>
-        <tr>
-            <th>구조 형식</th>
-            <td>{selected_type_key}</td>
-            <th>위치</th>
-            <td>경기도 성남시</td>
-        </tr>
-    </table>
-    """, unsafe_allow_html=True)
+    with st.sidebar:
+        if st.button("< 목록으로"): 
+            st.session_state['active_project_id'] = None
+            st.rerun()
+        st.markdown("---")
+        st.markdown("""<div class="save-control"><b>데이터 저장 제어</b><br><span style="font-size:11px; color:#555;">변경 사항은 저장 버튼을 눌러야 반영됩니다.</span></div>""", unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        if c1.button("저장", type="primary", use_container_width=True):
+            DataManager.save_all_projects(st.session_state['projects'])
+            st.toast("저장 완료!", icon="💾")
+        if c2.button("복구", use_container_width=True):
+            st.session_state['projects'] = DataManager.load_all_projects()
+            st.rerun()
 
-    st.write("")
-    
-    # 3. 점검자 정보
-    st.markdown('<h5 style="color: var(--text-color);">1. 점검 및 진단 수행자</h5>', unsafe_allow_html=True)
-    st.markdown(f"""
-    <table class="report-table">
-        <tr>
-            <th width="20%">소속</th>
-            <td width="30%">{insp_company}</td>
-            <th width="20%">성명</th>
-            <td width="30%">{field_inspector}</td>
-        </tr>
-        <tr>
-            <th>직위/직급</th>
-            <td>{inspector_pos}</td>
-            <th>서명</th>
-            <td>(인)</td>
-        </tr>
-    </table>
-    """, unsafe_allow_html=True)
-    
-    st.write("")
+        st.markdown("---")
+        st.markdown(f"**{proj.name}**")
+        
+        if proj.sections:
+            st.caption(f"총 {len(proj.sections)}개 구간 작업 중")
 
-    # 4. 종합 평가 결과
-    st.markdown('<h5 style="color: var(--text-color);">2. 종합 상태평가 결과</h5>', unsafe_allow_html=True)
-    
-    opinion = ""
-    if short_grade in ['A', 'B']: opinion = "대상 시설물은 전반적으로 양호한 상태를 유지하고 있으며, 현행 유지관리 수준을 지속적으로 수행하는 것이 바람직함."
-    elif short_grade == 'C': opinion = "주요 부재에 경미한 결함이 발생하였으나 안전성에는 지장이 없으며, 내구성 증진을 위한 예방적 보수가 필요함."
-    else: opinion = "주요 부재에 심각한 결함이 발생하여 긴급한 보수/보강 조치가 필요하며, 필요시 사용제한 조치를 검토해야 함."
+        with st.expander("구간 추가", expanded=not proj.sections):
+            with st.form("add_sec"):
+                sType = st.selectbox("형식", ["NATM (철근)", "NATM (무근)", "개착식 (BOX)", "TBM (세그먼트)", "재래식 (무근)"])
+                tLen = st.number_input("총연장", 10.0, 5000.0, 100.0)
+                uLen = st.number_input("단위", 5.0, 50.0, 20.0)
+                if st.form_submit_button("생성"):
+                    tm = {"NATM (철근)": TunnelType.NATM_RC, "NATM (무근)": TunnelType.NATM_PLAIN, "개착식 (BOX)": TunnelType.OPEN_CUT, "TBM (세그먼트)": TunnelType.TBM_SEGMENT, "재래식 (무근)": TunnelType.ASSM_PLAIN}
+                    new_sec = TunnelSection(proj.next_section_id, tm[sType], tLen, uLen)
+                    cnt = int(tLen // uLen)
+                    for i in range(cnt): new_sec.spans.append(TunnelSpan(i+1, uLen))
+                    if tLen % uLen > 0: new_sec.spans.append(TunnelSpan(cnt+1, tLen % uLen))
+                    proj.sections.append(new_sec)
+                    proj.next_section_id += 1
+                    DataManager.save_all_projects(st.session_state['projects'])
+                    st.rerun()
 
-    st.markdown(f"""
-    <table class="report-table">
-        <tr class="table-highlight-row">
-            <th>구분</th>
-            <th>산출 내역</th>
-            <th>결과값</th>
-            <th>비고</th>
-        </tr>
-        <tr>
-            <td>1단계 라이닝 평가</td>
-            <td>결함점수 합계 {span_res['total_score']}점 / 분모 {current_type.lining_denom}</td>
-            <td>f = {span_res['f_value']:.4f}</td>
-            <td>재질열화 등급: {span_res['mat_grade']}</td>
-        </tr>
-        <tr>
-            <td>2단계 주변상태 평가</td>
-            <td>주변상태 결함점수 합계</td>
-            <td>{surroundings_score} 점</td>
-            <td>배수, 지반 등</td>
-        </tr>
-        <tr>
-            <td>3단계 기본시설 지수</td>
-            <td>(라이닝평균 + 주변상태) / {current_type.total_denom}</td>
-            <td>F_basic = {F_basic:.4f}</td>
-            <td></td>
-        </tr>
-        <tr>
-            <td>4단계 부대시설 가중치</td>
-            <td>부대시설({aux_name}) 결함지수 {aux_score}</td>
-            <td>w = {w}</td>
-            <td>가중치 적용</td>
-        </tr>
-        <tr style="border-top: 2px solid var(--text-color);">
-            <td style="font-weight:bold;">종합 결함지수(F)</td>
-            <td colspan="2" class="final-score">{F_total:.4f}</td>
-            <td></td>
-        </tr>
-        <tr>
-            <td style="font-weight:bold;">최종 안전등급</td>
-            <td colspan="2" class="final-grade">{final_grade_str}</td>
-            <td></td>
-        </tr>
-    </table>
-    """, unsafe_allow_html=True)
+        st.markdown("#### 위치 선택")
+        if not proj.sections: st.warning("구간 필요")
+        if 'sel_sec_idx' not in st.session_state: st.session_state['sel_sec_idx'] = 0
+        if 'sel_span_idx' not in st.session_state: st.session_state['sel_span_idx'] = 0
+        
+        sec_opts = [f"Sec {s.id} ({s.type.label})" for s in proj.sections]
+        if sec_opts:
+            s_idx = st.selectbox("구간", range(len(sec_opts)), format_func=lambda x: sec_opts[x])
+            st.session_state['sel_sec_idx'] = s_idx
+            curr_sec = proj.sections[s_idx]
+            span_opts = [f"No.{sp.span_no} [{sp.result_cache.get('grade', 'A')[0]}]" for sp in curr_sec.spans]
+            sp_idx = st.radio("스판", range(len(span_opts)), format_func=lambda x: span_opts[x])
+            st.session_state['sel_span_idx'] = sp_idx
     
-    st.write("")
-    
-    # 5. 종합 의견
-    st.markdown('<h5 style="color: var(--text-color);">3. 종합 의견 및 조치 사항</h5>', unsafe_allow_html=True)
-    st.markdown(f"""<div class="opinion-box">{opinion}</div>""", unsafe_allow_html=True)
+    # -----------------------------------------------------
+    # 메인 탭 구성
+    # -----------------------------------------------------
+    if proj.sections:
+        curr_sec = proj.sections[st.session_state['sel_sec_idx']]
+        curr_span = curr_sec.spans[st.session_state['sel_span_idx']]
+        d = curr_span.data
+        
+        # 상단 히트맵 (화면용 - 다크모드 적응)
+        fig_map = draw_screen_heatmap(proj.sections)
+        if fig_map: st.plotly_chart(fig_map, use_container_width=True)
+        
+        tab1, tab2 = st.tabs(["현장 입력 (Input)", "종합 보고서 (Report)"])
+        
+        # [TAB 1] 입력
+        with tab1:
+            col_title, col_copy = st.columns([3, 1])
+            with col_title: st.markdown(f"#### 상세 조사 : Sec {curr_sec.id} - Span No.{curr_span.span_no}")
+            with col_copy:
+                if curr_span.span_no > 1:
+                    if st.button("이전값 복사"):
+                        import copy
+                        prev = curr_sec.spans[st.session_state['sel_span_idx']-1]
+                        curr_span.data = copy.deepcopy(prev.data)
+                        st.success("복사됨 (저장필요)")
+                        st.rerun()
 
-    st.markdown("</div>", unsafe_allow_html=True) # End of report-paper
-    
-    st.write("")
-    
-    # 다운로드 버튼
-    c_btn1, c_btn2, c_null = st.columns([2, 2, 6])
-    c_btn1.button("📄 PDF 보고서 생성", type="primary", use_container_width=True)
-    c_btn2.button("🖨️ 인쇄 (Print)", use_container_width=True)
+            c1, c2 = st.columns(2, gap="medium")
+            with c1:
+                st.markdown('<div class="step-header">1. 라이닝 평가</div>', unsafe_allow_html=True)
+                d.location = st.selectbox("위치", ["전구간", "천정부", "우측벽", "좌측벽", "바닥"], index=["전구간", "천정부", "우측벽", "좌측벽", "바닥"].index(d.location))
+                d.crack_width = st.number_input("균열(mm)", 0.0, 10.0, d.crack_width, 0.1)
+                d.leakage_grade = st.select_slider("누수", ["a","b","c","d","e"], value=d.leakage_grade)
+                d.breakage_grade = st.select_slider("파손", ["a","b","c","d","e"], value=d.breakage_grade)
+                
+                st.caption("재질열화 (최악조건)")
+                d.material.spalling_grade = st.select_slider("박리", ["a","b","c","d","e"], value=d.material.spalling_grade)
+                d.material.efflorescence_grade = st.select_slider("백태", ["a","b","c","d","e"], value=d.material.efflorescence_grade)
+                d.material.rebar_grade = st.select_slider("철근", ["a","b","c","d","e"], value=d.material.rebar_grade)
+                d.material.carbonation_grade = st.select_slider("탄산", ["a","b","c","d","e"], value=d.material.carbonation_grade)
+
+            with c2:
+                st.markdown('<div class="step-header">2. 주변 & 부대</div>', unsafe_allow_html=True)
+                d.sur_drain = st.slider("배수(0~4)", 0, 4, d.sur_drain)
+                d.sur_ground = st.slider("지반(0~4)", 0, 4, d.sur_ground)
+                is_p = (curr_span.span_no==1) or (curr_span.span_no==len(curr_sec.spans))
+                d.sur_portal = st.slider("갱문(0~4)", 0, 4, d.sur_portal if is_p else 0, disabled=not is_p)
+                d.aux_score = st.slider("부대시설(f)", 0.0, 1.0, d.aux_score, 0.05)
+                st.file_uploader("사진", key=f"p_{curr_span.span_no}")
+
+            res = system.calculate_span(curr_span, curr_sec.type)
+            st.info(f"판정: [{res['grade']}] F={res['f_value']:.4f}")
+
+        # [TAB 2] 보고서 (흰색 종이 스타일 강제 적용)
+        with tab2:
+            summary = system.calculate_project_summary(proj.sections)
+            if summary:
+                # 1. 의견 입력란 (화면 기본 스타일)
+                st.markdown("#### 📝 종합 의견 작성")
+                proj.opinion = st.text_area("점검자 소견 및 조치사항", value=proj.opinion, height=100)
+                
+                # 2. 엑셀 다운로드
+                data_list = []
+                for s in summary['span_results']:
+                    data_list.append({
+                        "구간": s['sec_id'], "형식": s['type'], "Span": s['span_no'], "길이": s['length'],
+                        "균열": s['data'].crack_width, "누수": s['data'].leakage_grade, "등급": s['result']['grade']
+                    })
+                df = pd.DataFrame(data_list)
+                out = BytesIO()
+                with pd.ExcelWriter(out, engine='xlsxwriter') as w: df.to_excel(w, index=False)
+                st.download_button("엑셀 다운로드", data=out.getvalue(), file_name=f"{proj.name}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                
+                st.divider()
+                
+                # 3. 진짜 보고서 뷰 (다크모드에서도 흰 종이처럼 보이게 강제함)
+                st.markdown('<div class="report-container">', unsafe_allow_html=True)
+                
+                # 제목
+                st.markdown(f'<div style="text-align:center;"><h2 style="color:black !important; text-decoration:underline;">{proj.name} 정밀안전진단 결과보고서</h2></div><br>', unsafe_allow_html=True)
+                
+                # 개요 테이블
+                st.markdown(f"""
+                <table class="report-table">
+                    <tr><th width="20%">시설물명</th><td width="30%">{proj.name}</td><th width="20%">점검일자</th><td width="30%">{proj.date_str}</td></tr>
+                    <tr><th>점검자</th><td>{proj.inspector}</td><th>소속</th><td>{proj.company} ({proj.position})</td></tr>
+                    <tr><th>총 연장</th><td>{summary['total_length']} m</td><th>구간 수</th><td>{len(proj.sections)} 개</td></tr>
+                </table><br>
+                """, unsafe_allow_html=True)
+                
+                # 종합 등급 박스
+                fg = summary['final_grade']
+                color_code = "#e74c3c" if "D" in fg or "E" in fg else "#3498db"
+                st.markdown(f"""
+                <div class="grade-box" style="border: 2px solid {color_code};">
+                    <strong style="font-size:16px; color:black;">종합 안전등급</strong><br>
+                    <span style="font-size:32px; font-weight:800; color:{color_code};">{fg}</span><br>
+                    <span style="font-size:14px; color:black;">(종합 결함지수 F = {summary['final_f']:.4f})</span>
+                </div><br>
+                """, unsafe_allow_html=True)
+                
+                # 차트 (배경 흰색/글씨 검정색 강제)
+                st.markdown('<h4 style="color:black !important;">[터널 상태 분포도]</h4>', unsafe_allow_html=True)
+                fig_report = draw_report_heatmap(proj.sections)
+                if fig_report: st.plotly_chart(fig_report, use_container_width=True)
+                
+                # 종합 의견
+                st.markdown('<br><h4 style="color:black !important;">[종합 의견 및 조치사항]</h4>', unsafe_allow_html=True)
+                op_text = proj.opinion if proj.opinion else "(작성된 의견이 없습니다)"
+                st.markdown(f"""<div class="opinion-box">{op_text}</div><br>""", unsafe_allow_html=True)
+                
+                # 세부 내역
+                st.markdown('<h4 style="color:black !important;">[주요 구간 세부 평가 내역]</h4>', unsafe_allow_html=True)
+                rows = ""
+                # 데이터가 너무 많으면 상위 20개만 표시 (보고서 길이 조절)
+                limit_rows = summary['span_results'][:20] 
+                for s in limit_rows:
+                    rows += f"<tr><td>{s['sec_id']}</td><td>{s['type']}</td><td>{s['span_no']}</td><td>{s['result']['grade']}</td><td>{s['result']['f_value']:.4f}</td></tr>"
+                
+                st.markdown(f"""
+                <table class="report-table">
+                    <thead><tr><th>구간</th><th>형식</th><th>Span No</th><th>안전등급</th><th>결함지수(F)</th></tr></thead>
+                    <tbody>{rows}</tbody>
+                </table>
+                """, unsafe_allow_html=True)
+                if len(summary['span_results']) > 20:
+                     st.markdown('<p style="text-align:center; color:#666; font-size:12px;">(전체 데이터는 엑셀 파일을 참조하세요)</p>', unsafe_allow_html=True)
+
+                st.markdown('</div>', unsafe_allow_html=True) # End report-container
