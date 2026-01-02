@@ -1,15 +1,13 @@
 import sys
-from dataclasses import dataclass
-from typing import List
+import json
+from dataclasses import dataclass, field, asdict
+from typing import List, Dict
 from enum import Enum
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-# =========================================================
-# 1. 기준 정보 (Criteria)
-# =========================================================
+# 1. 기준 정보
 class TunnelType(Enum):
-    """터널 형식 및 배점 기준 (세부지침 2.4.1)"""
     ASSM_BRICK = ("재래식 (조적)", 26, 33)
     ASSM_PLAIN = ("재래식 (무근)", 27, 34)
     NATM_PLAIN = ("NATM (무근)", 27, 34)
@@ -22,127 +20,213 @@ class TunnelType(Enum):
         self.lining_denom = lining_denom
         self.total_denom = total_denom
 
-# =========================================================
-# 2. 입력 데이터 모델 (DTO)
-# =========================================================
+    @staticmethod
+    def from_label(label):
+        for t in TunnelType:
+            if t.label == label: return t
+        return TunnelType.NATM_RC
+
+# 2. 데이터 모델
 @dataclass
 class MaterialDefects:
-    """재질열화 세부 항목 (최악 등급 선정용)"""
-    spalling_grade: str     # 박리/박락
-    efflorescence_grade: str # 백태
-    rebar_grade: str        # 철근노출
-    carbonation_grade: str  # 탄산화
+    spalling_grade: str = 'a'
+    efflorescence_grade: str = 'a'
+    rebar_grade: str = 'a'
+    carbonation_grade: str = 'a'
     
     def get_worst_grade(self) -> str:
-        """가장 불리한 등급 반환"""
-        grades = [self.spalling_grade, self.efflorescence_grade, self.rebar_grade, self.carbonation_grade]
-        return max(grades)
+        return max([self.spalling_grade, self.efflorescence_grade, self.rebar_grade, self.carbonation_grade])
 
 @dataclass
-class SurroundingsInput:
-    """주변상태 세부 평가 항목 (5종)"""
-    drainage_score: float   # 배수
-    ground_score: float     # 지반
-    portal_score: float     # 갱문
-    utility_score: float    # 공동구
-    special_score: float    # 특수조건
-
-    def get_total_score(self) -> float:
-        return self.drainage_score + self.ground_score + self.portal_score + self.utility_score + self.special_score
-
-@dataclass
-class RawInspectionData:
-    """현장 조사 데이터"""
-    span_id: int
-    crack_width_mm: float
-    leakage_grade: str
-    breakage_grade: str
-    material_details: MaterialDefects 
-
-@dataclass
-class AuxiliaryInput:
-    """부대시설 데이터"""
-    name: str
-    f_score: float
-
-# =========================================================
-# 3. 평가 및 계산 로직
-# =========================================================
-class DefectEvaluator:
-    GRADE_SCORE_MAP = {'a': 1.0, 'b': 4.0, 'c': 7.0, 'd': 10.0, 'e': 13.0}
+class InspectionData:
+    location: str = "전구간"
+    crack_width: float = 0.0
+    leakage_grade: str = 'a'
+    breakage_grade: str = 'a'
+    soil_leak: bool = False
+    material: MaterialDefects = field(default_factory=MaterialDefects)
+    sur_drain: int = 0
+    sur_ground: int = 0
+    sur_portal: int = 0
+    sur_util: int = 0
+    sur_special: int = 0
+    aux_score: float = 0.1
+    photo_name: str = ""
 
     @staticmethod
+    def from_dict(d):
+        mat_data = d.pop('material', {})
+        obj = InspectionData(**d)
+        obj.material = MaterialDefects(**mat_data)
+        return obj
+
+@dataclass
+class TunnelSpan:
+    span_no: int
+    length: float
+    data: InspectionData = field(default_factory=InspectionData)
+    result_cache: dict = field(default_factory=dict)
+
+    def to_dict(self): return asdict(self)
+    @staticmethod
+    def from_dict(d):
+        data_dict = d.pop('data')
+        obj = TunnelSpan(**d)
+        obj.data = InspectionData.from_dict(data_dict)
+        return obj
+
+@dataclass
+class TunnelSection:
+    id: int
+    type: TunnelType
+    total_length: float
+    unit_length: float
+    spans: List[TunnelSpan] = field(default_factory=list)
+
+    def to_dict(self):
+        d = asdict(self)
+        d['type'] = self.type.label
+        d['spans'] = [s.to_dict() for s in self.spans]
+        return d
+
+    @staticmethod
+    def from_dict(d):
+        t_label = d.pop('type')
+        spans_data = d.pop('spans', [])
+        obj = TunnelSection(id=d['id'], total_length=d['total_length'], unit_length=d.get('unit_length', 20.0), type=TunnelType.from_label(t_label))
+        obj.spans = [TunnelSpan.from_dict(s) for s in spans_data]
+        return obj
+
+@dataclass
+class ProjectMetadata:
+    id: str
+    name: str
+    inspector: str
+    position: str
+    company: str
+    date_str: str
+    opinion: str = "" # [NEW] 종합 의견 필드 추가
+    sections: List[TunnelSection] = field(default_factory=list)
+    next_section_id: int = 1
+
+    def to_dict(self):
+        return {
+            "id": self.id, "name": self.name, "inspector": self.inspector,
+            "position": self.position, "company": self.company, "date_str": self.date_str,
+            "opinion": self.opinion, "next_section_id": self.next_section_id,
+            "sections": [s.to_dict() for s in self.sections]
+        }
+
+    @staticmethod
+    def from_dict(d):
+        secs = [TunnelSection.from_dict(s) for s in d.pop('sections', [])]
+        obj = ProjectMetadata(**d)
+        obj.sections = secs
+        return obj
+
+# 3. 데이터 매니저
+class DataManager:
+    DB_FILE = "smped_tunnel_db.json"
+    @staticmethod
+    def load_all_projects() -> Dict[str, ProjectMetadata]:
+        try:
+            with open(DataManager.DB_FILE, 'r', encoding='utf-8') as f:
+                raw_data = json.load(f)
+                return {k: ProjectMetadata.from_dict(v) for k, v in raw_data.items()}
+        except: return {}
+
+    @staticmethod
+    def save_all_projects(projects: Dict[str, ProjectMetadata]):
+        raw_data = {k: v.to_dict() for k, v in projects.items()}
+        with open(DataManager.DB_FILE, 'w', encoding='utf-8') as f:
+            json.dump(raw_data, f, ensure_ascii=False, indent=4)
+
+# 4. 평가 로직
+class DefectEvaluator:
+    GRADE_SCORE_MAP = {'a': 1.0, 'b': 4.0, 'c': 7.0, 'd': 10.0, 'e': 13.0}
+    @staticmethod
     def evaluate_crack(width_mm: float, t_type: TunnelType) -> dict:
-        """형식별 균열 등급 판정"""
-        # 무근 기준
         if t_type in [TunnelType.ASSM_PLAIN, TunnelType.ASSM_BRICK, TunnelType.NATM_PLAIN]:
             if width_mm <= 0.1: return {"grade": "a", "score": 1.0}
             elif width_mm <= 0.3: return {"grade": "b", "score": 4.0}
             elif width_mm <= 1.0: return {"grade": "c", "score": 7.0}
             elif width_mm <= 3.0: return {"grade": "d", "score": 10.0}
             else: return {"grade": "e", "score": 13.0}
-        # 철근 기준
         else:
             if width_mm <= 0.1: return {"grade": "a", "score": 1.0}
             elif width_mm <= 0.3: return {"grade": "b", "score": 4.0}
             elif width_mm <= 0.5: return {"grade": "c", "score": 7.0}
             elif width_mm <= 1.0: return {"grade": "d", "score": 10.0}
             else: return {"grade": "e", "score": 13.0}
-
+    
     @staticmethod
     def get_score(grade_char: str) -> float:
         return DefectEvaluator.GRADE_SCORE_MAP.get(grade_char.lower(), 0.0)
 
 class TunnelSafetySystem:
-    def __init__(self, tunnel_type: TunnelType):
-        self.type = tunnel_type
-
-    def calculate_span(self, data: RawInspectionData):
-        """1단계 라이닝 결함지수 산정"""
+    def calculate_span(self, span: TunnelSpan, t_type: TunnelType):
+        d = span.data
         scores = {}
         alerts = []
 
-        # 1. 균열
-        crack_eval = DefectEvaluator.evaluate_crack(data.crack_width_mm, self.type)
+        crack_eval = DefectEvaluator.evaluate_crack(d.crack_width, t_type)
         scores['crack'] = crack_eval['score']
-        if crack_eval['grade'] >= 'd':
-            alerts.append(f"진행성 균열 '{crack_eval['grade']}'등급 (중대결함 의심)")
+        if crack_eval['grade'] >= 'd': alerts.append("진행성 균열(d등급 이상)")
+        
+        worst_mat = d.material.get_worst_grade()
+        scores['material'] = DefectEvaluator.get_score(worst_mat)
+        if d.material.rebar_grade >= 'e': alerts.append("철근노출 심각(e등급)")
 
-        # 2. 재질열화 (최악등급 적용)
-        worst_mat_grade = data.material_details.get_worst_grade()
-        scores['material'] = DefectEvaluator.get_score(worst_mat_grade)
-        if data.material_details.rebar_grade >= 'e':
-             alerts.append("철근노출 상태 심각 ('e'등급) - 즉시 보강 필요")
+        scores['leakage'] = DefectEvaluator.get_score(d.leakage_grade)
+        scores['breakage'] = DefectEvaluator.get_score(d.breakage_grade)
+        if d.soil_leak and d.leakage_grade >= 'd': alerts.append("토립자 유출 동반 누수")
 
-        # 3. 기타 항목
-        scores['leakage'] = DefectEvaluator.get_score(data.leakage_grade)
-        scores['breakage'] = DefectEvaluator.get_score(data.breakage_grade)
-
-        # 4. 합계 및 지수(f)
-        total_score = sum(scores.values())
-        f_value = total_score / self.type.lining_denom
-
-        return {
-            "total_score": total_score,
-            "f_value": round(f_value, 4),
-            "mat_grade": worst_mat_grade,
-            "alerts": alerts
+        lining_total = sum(scores.values())
+        surround_total = d.sur_drain + d.sur_ground + d.sur_portal + d.sur_util + d.sur_special
+        f_basic = (lining_total + surround_total) / t_type.total_denom
+        
+        w = 1.0
+        if d.aux_score < 0.15: w = 1.0
+        elif d.aux_score < 0.30: w = 1.0
+        elif d.aux_score < 0.55: w = 1.02
+        elif d.aux_score < 0.75: w = 1.05
+        else: w = 1.10
+        
+        f_final = f_basic * w
+        
+        result = {
+            "f_value": f_final, "grade": self.get_grade_str(f_final),
+            "alerts": alerts, "details": {"lining": lining_total, "surround": surround_total, "w": w}
         }
+        span.result_cache = result
+        return result
 
-    def calculate_auxiliary_weight(self, aux_list: List[AuxiliaryInput]) -> float:
-        """부대시설 가중치(w) 산정"""
-        if not aux_list: return 1.0
-        avg_f = sum(a.f_score for a in aux_list) / len(aux_list)
-        if avg_f < 0.15: return 1.0
-        elif avg_f < 0.30: return 1.0
-        elif avg_f < 0.55: return 1.02
-        elif avg_f < 0.75: return 1.05
-        else: return 1.10
-
-    def calculate_final_grade(self, f_value: float) -> str:
-        """최종 등급 판정"""
+    def get_grade_str(self, f_value: float) -> str:
         if f_value < 0.15: return "A (우수)"
         elif f_value < 0.30: return "B (양호)"
         elif f_value < 0.55: return "C (보통)"
         elif f_value < 0.75: return "D (미흡)"
         else: return "E (불량)"
+
+    def calculate_project_summary(self, sections: List[TunnelSection]):
+        if not sections: return None
+        all_spans = []
+        for sec in sections:
+            for span in sec.spans:
+                self.calculate_span(span, sec.type)
+                all_spans.append({
+                    "sec_id": sec.id, "type": sec.type.label,
+                    "span_no": span.span_no, "length": span.length,
+                    "data": span.data, "result": span.result_cache
+                })
+        
+        if not all_spans: return None
+        total_weighted_f = sum(s['result']['f_value'] * s['length'] for s in all_spans)
+        total_len = sum(s['length'] for s in all_spans)
+        final_f = total_weighted_f / total_len if total_len > 0 else 0
+        
+        return {
+            "final_f": final_f, "final_grade": self.get_grade_str(final_f),
+            "total_length": total_len, "span_results": all_spans,
+            "alerts": [f"[Sec {s['sec_id']}-No.{s['span_no']}] {msg}" for s in all_spans for msg in s['result']['alerts']]
+        }
