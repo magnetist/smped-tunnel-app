@@ -6,7 +6,6 @@ from enum import Enum
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-# 1. 기준 정보
 class TunnelType(Enum):
     ASSM_BRICK = ("재래식 (조적)", 26, 33)
     ASSM_PLAIN = ("재래식 (무근)", 27, 34)
@@ -26,7 +25,6 @@ class TunnelType(Enum):
             if t.label == label: return t
         return TunnelType.NATM_RC
 
-# 2. 데이터 모델
 @dataclass
 class MaterialDefects:
     spalling_grade: str = 'a'
@@ -55,8 +53,13 @@ class InspectionData:
 
     @staticmethod
     def from_dict(d):
+        # [안전장치] 키가 없어도 기본값 {} 처리
         mat_data = d.pop('material', {})
-        obj = InspectionData(**d)
+        # [안전장치] 과거 데이터에 없는 필드가 있어도 에러 안 나게 처리
+        valid_keys = InspectionData.__annotations__.keys()
+        filtered_d = {k: v for k, v in d.items() if k in valid_keys}
+        
+        obj = InspectionData(**filtered_d)
         obj.material = MaterialDefects(**mat_data)
         return obj
 
@@ -70,7 +73,7 @@ class TunnelSpan:
     def to_dict(self): return asdict(self)
     @staticmethod
     def from_dict(d):
-        data_dict = d.pop('data')
+        data_dict = d.pop('data', {})
         obj = TunnelSpan(**d)
         obj.data = InspectionData.from_dict(data_dict)
         return obj
@@ -91,9 +94,15 @@ class TunnelSection:
 
     @staticmethod
     def from_dict(d):
-        t_label = d.pop('type')
+        t_label = d.pop('type', "NATM (철근)")
         spans_data = d.pop('spans', [])
-        obj = TunnelSection(id=d['id'], total_length=d['total_length'], unit_length=d.get('unit_length', 20.0), type=TunnelType.from_label(t_label))
+        # [안전장치] unit_length가 없을 경우 기본값 20.0
+        obj = TunnelSection(
+            id=d.get('id', 1), 
+            total_length=d.get('total_length', 100.0), 
+            unit_length=d.get('unit_length', 20.0), 
+            type=TunnelType.from_label(t_label)
+        )
         obj.spans = [TunnelSpan.from_dict(s) for s in spans_data]
         return obj
 
@@ -105,7 +114,7 @@ class ProjectMetadata:
     position: str
     company: str
     date_str: str
-    opinion: str = "" # [NEW] 종합 의견 필드 추가
+    opinion: str = ""
     sections: List[TunnelSection] = field(default_factory=list)
     next_section_id: int = 1
 
@@ -120,11 +129,15 @@ class ProjectMetadata:
     @staticmethod
     def from_dict(d):
         secs = [TunnelSection.from_dict(s) for s in d.pop('sections', [])]
-        obj = ProjectMetadata(**d)
+        # [안전장치] opinion 필드가 없는 구버전 데이터 호환
+        obj = ProjectMetadata(
+            id=d.get('id', ''), name=d.get('name', ''), inspector=d.get('inspector', ''),
+            position=d.get('position', ''), company=d.get('company', ''), date_str=d.get('date_str', ''),
+            opinion=d.get('opinion', ''), next_section_id=d.get('next_section_id', 1)
+        )
         obj.sections = secs
         return obj
 
-# 3. 데이터 매니저
 class DataManager:
     DB_FILE = "smped_tunnel_db.json"
     @staticmethod
@@ -133,7 +146,8 @@ class DataManager:
             with open(DataManager.DB_FILE, 'r', encoding='utf-8') as f:
                 raw_data = json.load(f)
                 return {k: ProjectMetadata.from_dict(v) for k, v in raw_data.items()}
-        except: return {}
+        except Exception: 
+            return {} # 파일 없거나 깨지면 빈 딕셔너리 반환
 
     @staticmethod
     def save_all_projects(projects: Dict[str, ProjectMetadata]):
@@ -141,11 +155,11 @@ class DataManager:
         with open(DataManager.DB_FILE, 'w', encoding='utf-8') as f:
             json.dump(raw_data, f, ensure_ascii=False, indent=4)
 
-# 4. 평가 로직
 class DefectEvaluator:
     GRADE_SCORE_MAP = {'a': 1.0, 'b': 4.0, 'c': 7.0, 'd': 10.0, 'e': 13.0}
     @staticmethod
     def evaluate_crack(width_mm: float, t_type: TunnelType) -> dict:
+        # 터널 형식별 균열 기준 적용
         if t_type in [TunnelType.ASSM_PLAIN, TunnelType.ASSM_BRICK, TunnelType.NATM_PLAIN]:
             if width_mm <= 0.1: return {"grade": "a", "score": 1.0}
             elif width_mm <= 0.3: return {"grade": "b", "score": 4.0}
@@ -183,7 +197,10 @@ class TunnelSafetySystem:
 
         lining_total = sum(scores.values())
         surround_total = d.sur_drain + d.sur_ground + d.sur_portal + d.sur_util + d.sur_special
-        f_basic = (lining_total + surround_total) / t_type.total_denom
+        
+        # [안전장치] 분모가 0일 경우 대비 (사실상 없지만 방어코드)
+        denom = t_type.total_denom if t_type.total_denom > 0 else 1
+        f_basic = (lining_total + surround_total) / denom
         
         w = 1.0
         if d.aux_score < 0.15: w = 1.0
@@ -223,6 +240,8 @@ class TunnelSafetySystem:
         if not all_spans: return None
         total_weighted_f = sum(s['result']['f_value'] * s['length'] for s in all_spans)
         total_len = sum(s['length'] for s in all_spans)
+        
+        # [안전장치] 총 연장이 0일 경우 대비
         final_f = total_weighted_f / total_len if total_len > 0 else 0
         
         return {
