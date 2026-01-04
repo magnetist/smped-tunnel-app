@@ -9,7 +9,7 @@ from datetime import datetime
 from tunnel_master_logic import TunnelType, TunnelSafetySystem, TunnelSection, TunnelSpan, DataManager, ProjectMetadata, InspectionData
 
 # ---------------------------------------------------------
-# 1. 설정 및 스타일 (태블릿 터치 최적화)
+# 1. 설정 및 스타일
 # ---------------------------------------------------------
 st.set_page_config(page_title="SM-PED Tunnel Tablet", layout="wide")
 
@@ -18,12 +18,10 @@ if 'projects' not in st.session_state:
 if 'active_project_id' not in st.session_state:
     st.session_state['active_project_id'] = None
 
-# 인덱스 초기화 함수
 def reset_indices():
     st.session_state['sel_sec_idx'] = 0
     st.session_state['sel_span_idx'] = 0
 
-# CSS 스타일
 st.markdown("""
     <style>
     .main { font-family: 'Pretendard', sans-serif; }
@@ -41,12 +39,15 @@ st.markdown("""
     .report-container { background-color: #ffffff !important; padding: 40px; color: #000000 !important; }
     .report-table th { background-color: #f8f9fa !important; color: #000000 !important; font-size: 14px; padding: 12px; }
     .report-table td { color: #000000 !important; font-size: 14px; padding: 12px; }
+    
+    /* 제원 관리 테이블 스타일 */
+    .structure-box { background-color: #e3f2fd; padding: 15px; border-radius: 8px; border: 1px solid #90caf9; margin-bottom: 20px; }
     </style>
 """, unsafe_allow_html=True)
 
 st.markdown(f"""
     <div class="header-bar">
-        <div style="font-size:24px; font-weight:800;">SM-PED Tunnel <span style="font-size:16px; font-weight:400; opacity:0.8;">Tablet v12.1 (Stable)</span></div>
+        <div style="font-size:24px; font-weight:800;">SM-PED Tunnel <span style="font-size:16px; font-weight:400; opacity:0.8;"></span></div>
     </div>
 """, unsafe_allow_html=True)
 
@@ -89,20 +90,18 @@ def draw_screen_heatmap(sections):
     return fig
 
 # ---------------------------------------------------------
-# [MODE 1] 프로젝트 선택 (대시보드)
+# [MODE 1] 프로젝트 선택
 # ---------------------------------------------------------
 if st.session_state['active_project_id'] is None:
-    st.info("💡 태블릿/펜 최적화 모드입니다. 큼직한 버튼을 활용하세요.")
+    st.info("Daum Engineering")
     
     col1, col2 = st.columns([2, 1], gap="large")
     with col2:
         st.markdown("### 🆕 신규 프로젝트")
-        # [수정] st.container -> st.form으로 변경하여 Submit 오류 해결
         with st.form("create_proj_form", border=True):
             name = st.text_input("시설물명", placeholder="예: 판교1터널")
             inspector = st.text_input("점검자", "홍길동")
             st.write("") 
-            # 이제 form 안이므로 에러가 나지 않습니다.
             if st.form_submit_button("프로젝트 생성 (Create)", type="primary", use_container_width=True):
                 if name:
                     pid = str(uuid.uuid4())[:8]
@@ -134,18 +133,15 @@ if st.session_state['active_project_id'] is None:
                             st.rerun()
 
 # ---------------------------------------------------------
-# [MODE 2] 작업 공간 (Tablet Optimized)
+# [MODE 2] 작업 공간
 # ---------------------------------------------------------
 else:
     pid = st.session_state['active_project_id']
-    # 프로젝트 삭제 등 예외 처리
     if pid not in st.session_state['projects']:
         st.session_state['active_project_id'] = None
         st.rerun()
         
     proj = st.session_state['projects'][pid]
-    
-    # [수정] TypeError 방지를 위해 인자 없이 호출
     system = TunnelSafetySystem()
     
     with st.sidebar:
@@ -169,7 +165,7 @@ else:
             with st.form("add_sec"):
                 sType = st.selectbox("형식", ["NATM (철근)", "NATM (무근)", "개착식 (BOX)", "TBM (세그먼트)", "재래식 (무근)"])
                 tLen = st.number_input("총연장(m)", 100.0)
-                uLen = st.number_input("단위(m)", 20.0)
+                uLen = st.number_input("기준 단위(m)", 20.0)
                 if st.form_submit_button("구간 생성"):
                     if tLen > 0 and uLen > 0:
                         tm = {"NATM (철근)": TunnelType.NATM_RC, "NATM (무근)": TunnelType.NATM_PLAIN, "개착식 (BOX)": TunnelType.OPEN_CUT, "TBM (세그먼트)": TunnelType.TBM_SEGMENT, "재래식 (무근)": TunnelType.ASSM_PLAIN}
@@ -188,6 +184,7 @@ else:
                 DataManager.save_all_projects(st.session_state['projects'])
                 st.rerun()
 
+    # [MAIN] 상단 내비게이션
     col_nav1, col_nav2, col_save_big = st.columns([2, 2, 1])
     
     if not proj.sections: 
@@ -215,9 +212,43 @@ else:
         curr_span = curr_sec.spans[st.session_state['sel_span_idx']]
         d = curr_span.data
 
+        # 히트맵
         fig_map = draw_screen_heatmap(proj.sections)
         if fig_map: st.plotly_chart(fig_map, use_container_width=True)
 
+        # [NEW] 스판 제원 일괄 관리 (Structure Manager)
+        with st.expander("📏 스판 길이(m) 일괄 변경"):
+            st.markdown('<div class="structure-box">', unsafe_allow_html=True)
+            st.info("아래 표에서 각 스판의 길이를 직접 수정할 수 있습니다. (예: 20m -> 15.5m)")
+            
+            # 데이터프레임 생성
+            span_data = [{"Span No": s.span_no, "Length (m)": s.length} for s in curr_sec.spans]
+            df_struct = pd.DataFrame(span_data)
+            
+            # 데이터 에디터 (수정 가능)
+            edited_df = st.data_editor(
+                df_struct, 
+                column_config={"Span No": st.column_config.NumberColumn(disabled=True), "Length (m)": st.column_config.NumberColumn(min_value=0.1, max_value=100.0, step=0.1)},
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            if st.button("변경된 길이 적용하기"):
+                # 수정된 데이터 반영
+                new_lengths = edited_df["Length (m)"].tolist()
+                total_len_calc = 0
+                for i, span in enumerate(curr_sec.spans):
+                    span.length = new_lengths[i]
+                    total_len_calc += span.length
+                
+                # 구간 전체 연장도 자동 업데이트
+                curr_sec.total_length = total_len_calc
+                DataManager.save_all_projects(st.session_state['projects'])
+                st.success(f"적용 완료! 구간 총 연장이 {total_len_calc:.2f}m로 업데이트되었습니다.")
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # 탭 구성
         tab1, tab2 = st.tabs(["🖊️ 현장 입력 (Input)", "📄 보고서 (Report)"])
         
         # [TAB 1] 입력
@@ -225,7 +256,8 @@ else:
             c_len, c_copy = st.columns([3, 1])
             with c_len:
                 unique_key = f"{curr_sec.id}_{curr_span.span_no}"
-                curr_span.length = st.number_input("📏 스판 길이 (m)", value=curr_span.length, key=f"len_{unique_key}")
+                # 개별 길이 수정도 가능 (양쪽 동기화)
+                curr_span.length = st.number_input("📏 현재 스판 길이 (m)", value=curr_span.length, key=f"len_{unique_key}")
             with c_copy:
                 if curr_span.span_no > 1:
                     if st.button("📋 이전값 복사", use_container_width=True):
@@ -285,20 +317,20 @@ else:
                 data_list = []
                 for s in summary['span_results']:
                     data_list.append({
-                        "구간": s['sec_id'], "형식": s['type'], "Span": s['span_no'], "길이": s['length'],
+                        "구간": s['sec_id'], "형식": s['type'], "Span": s['span_no'], "길이(m)": s['length'],
                         "균열": s['data'].crack_width, "누수": s['data'].leakage_grade, "등급": s['result']['grade']
                     })
                 df = pd.DataFrame(data_list)
                 
                 safe_name = re.sub(r'[\\/*?:"<>|]', "", proj.name)
                 
-                # [수정] 엑셀 라이브러리 예외 처리 (설치 안됐을 때 튕김 방지)
+                # 엑셀 예외처리
                 try:
                     out = BytesIO()
                     with pd.ExcelWriter(out, engine='xlsxwriter') as w: df.to_excel(w, index=False)
                     st.download_button("📥 엑셀 다운로드", data=out.getvalue(), file_name=f"{safe_name}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
                 except ModuleNotFoundError:
-                    st.error("⚠️ 엑셀 내보내기 기능을 사용하려면 'xlsxwriter' 라이브러리 설치가 필요합니다. (pip install xlsxwriter)")
+                    st.error("xlsxwriter 라이브러리가 필요합니다.")
                 
                 st.divider()
                 st.markdown('<div class="report-container">', unsafe_allow_html=True)
@@ -307,7 +339,7 @@ else:
                 <table class="report-table">
                     <tr><th width="20%">시설물명</th><td width="30%">{proj.name}</td><th width="20%">점검일자</th><td width="30%">{proj.date_str}</td></tr>
                     <tr><th>점검자</th><td>{proj.inspector}</td><th>소속</th><td>{proj.company} ({proj.position})</td></tr>
-                    <tr><th>총 연장</th><td>{summary['total_length']} m</td><th>구간 수</th><td>{len(proj.sections)} 개</td></tr>
+                    <tr><th>총 연장</th><td>{summary['total_length']:.1f} m</td><th>구간 수</th><td>{len(proj.sections)} 개</td></tr>
                 </table><br>
                 """, unsafe_allow_html=True)
                 fg = summary['final_grade']
